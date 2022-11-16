@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Feb  9 19:05:45 2020
-
-@author: clin4
+tools to pull player information off basketball reference website
 """
 
 from urllib.request import urlopen
