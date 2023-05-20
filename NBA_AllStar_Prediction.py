@@ -2,7 +2,7 @@
 """
 Created on Fri Mar 31 23:15:43 2023
 
-@author: clin4
+@author: chris f lin
 """
 import os
 import tensorflow as tf
@@ -12,6 +12,13 @@ from urllib.request import urlopen
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
+import numpy as np
+
+from sklearn.utils import shuffle
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestClassifier
+
+import matplotlib.pyplot as plt
 
 def combine_stats(stats, mode = 'basic'):
     #fantasy scoring:
@@ -212,26 +219,141 @@ def load_data():
     nonallstar_data = pd.read_csv(filepath_or_buffer=directory+'\\data\\non_allstar_data.csv')
     return allstar_data, nonallstar_data
 
-def AllStar_Prediction_Model(num_inputs):
-    inp = tf.keras.layers.Input(shape = (num_inputs,))
-    next_layer = tf.keras.layers.Dense(units = 8,activation = 'sigmoid', name = 'dense1')(inp)
-    next_layer = tf.keras.layers.Dense(units = 16,activation = 'sigmoid', name='dense2')(next_layer)
-    out = tf.keras.layers.Dense(units = 2, activation = 'softmax', name='dense_softmax')(next_layer)
-    return tf.keras.Model(inp, out)
+def train_prep(allstar_data, nonallstar_data, split_perc = .3):
+    
+    names = allstar_data.Player.to_list()
+    names.extend(nonallstar_data.Player.to_list())
+    unwanted= list(allstar_data.columns)[:3]
+    for u in unwanted:
+        allstar_data = allstar_data.drop(labels = u, axis = 1)
+        nonallstar_data = nonallstar_data.drop(labels = u, axis = 1)
+        
+    allstar_data = allstar_data.to_numpy()
+    nonallstar_data = nonallstar_data.to_numpy()
+    
+    target1 = np.ones((allstar_data.shape[0]))
+    target0 = np.zeros((nonallstar_data.shape[0]))
 
+    target = np.concatenate([target1, target0], axis = 0)
+    input_data = np.concatenate([allstar_data, nonallstar_data], axis = 0)
+
+    #just current_stats, games played, record
+    data = input_data[:,:3]
+
+    shufflex, shuffley, shuffle_names = shuffle(data, target, names)
+    
+    split_num = int(len(target1)*split_perc)
+
+    trainx = shufflex[:-split_num]
+    trainy = shuffley[:-split_num]
+    trainnames = shuffle_names[:-split_num]
+    
+    testx = shufflex[-split_num:]
+    testy = shuffley[-split_num:]
+    testnames = shuffle_names[-split_num:]
+    train = {'x': trainx, 'y':trainy, 'names': trainnames}
+    test = {'x':testx, 'y':testy, 'names':testnames}
+    return train, test
+
+def Conv_Model(num_inputs, train, test, threshold = .75, epochs = 50, batch_size = 1):
+    inp = tf.keras.layers.Input(shape = (num_inputs,))
+    next_layer = tf.keras.layers.Dense(units = 16,activation = 'sigmoid', name = 'dense1')(inp)
+    next_layer = tf.keras.layers.Dense(units = 8,activation = 'sigmoid', name='dense2')(next_layer)
+    out = tf.keras.layers.Dense(units = 1, activation = 'softmax', name='dense_softmax')(next_layer)
+    
+    model = tf.keras.Model(inp, out)
+    model.compile(optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4), 
+               loss = 'binary_crossentropy', metrics = ['accuracy'])
+    model.fit(x = train['x'], y = train['y'], shuffle=True, epochs = epochs, batch_size = batch_size)
+    
+    predictions = model.predict(test['x'])
+    accuracy = 1-sum(abs(test['y']-(predictions>threshold)))/len(test['y'])
+    
+    print('Prediction via FCN off {} epochs:'.format(epochs), accuracy)    
+
+    return model
+
+def RidgePrediction(train, test,testalpha=.1, threshold = .75):
+    reg = Ridge(alpha=testalpha)
+    reg.fit(X = train['x'], y = train['y'])
+
+    predictions = reg.predict(X = test['x'])
+    accuracy = 1-sum(abs(test['y']-(predictions>threshold)))/len(test['y'])
+    
+    print('Prediction via Ridge:', accuracy)    
+    return reg, predictions
+
+def RandomForestPrediction(train, test, n_estimators=100, max_depth=None, threshold = .75):
+    RF = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth)
+    RF.fit(X = train['x'], y = train['y'])
+    
+    predictions = RF.predict(X = test['x'])
+    accuracy = 1-sum(abs(test['y']-(predictions>threshold)))/len(test['y'])
+    
+    print('Prediction via RF:', accuracy)    
+    return RF, predictions
+
+def visualize_results(test, predictions, names, model_type, threshold=.75):
+    plt.figure()
+    plt.plot([-1, len(names)], [threshold, threshold], label = 'threshold')
+    
+    correctx = []
+    correcty = []
+    incorrectx = []
+    incorrecty = []
+    
+    guess = predictions>threshold
+    
+    for ind, correct_guess in enumerate(test['y']==guess):
+        if correct_guess:
+            correctx.append(ind)
+            correcty.append(predictions[ind])
+        else:
+            incorrectx.append(ind)
+            incorrecty.append(predictions[ind])
+    
+    plt.scatter(x = correctx, y = correcty, c = 'g', label = 'correct')
+    plt.scatter(x = incorrectx, y = incorrecty, c = 'r', label='incorrect')
+    counter = 0
+    for x,y,name in zip(incorrectx,incorrecty, names):
+        plt.annotate(text = name, #text
+                     xy = (x,y),  #coordinate
+                     textcoords='offset points', #how to position
+                     xytext=(0,(-1)**counter * 10),# distance from text to points (x,y)
+                     ha='center')
+        counter+=1
+        
+    #color red if incorrect prediction, color green if correct prediction
+    #label each point with names
+    plt.legend()
+    plt.xlim([-1, len(names)])
+    plt.title(model_type)
+    plt.show()
+    
+    return
 
 def main():
     try:
         allstar_data, nonallstar_data = load_data()
         print('data loaded')
+        
     except:
         print('broken')
         allstar_data, nonallstar_data = generate_data(2016,2024)
-    print(allstar_data.columns)
-    model = AllStar_Prediction_Model(len(allstar_data.columns)-3)
-    print(model.summary)
-    #want to use binary cross-entropy/log loss
-    #use softmax in conjunction with cross entropy (last layer)
+    
+    train,test = train_prep(allstar_data, nonallstar_data, .3)
+    
+    #convolutional network model
+    #conv_model = Conv_Model(num_inputs = 3, train = train, test = test, epochs = 50)#len(allstar_data.columns)-3)
+    
+    #ridge linear model
+    ridge_model,ridge_predictions = RidgePrediction(train, test)
+    visualize_results(test, ridge_predictions, test['names'], 'Ridge')
+    
+    #random forest model
+    RF_model, RF_predictions = RandomForestPrediction(train,test)
+    visualize_results(test, RF_predictions, test['names'], 'Random Forest')
+    
     
 if __name__=='__main__':
     main()
